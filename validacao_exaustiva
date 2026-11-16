@@ -1,0 +1,14 @@
+import time, sys
+from ler_dados import ler_arquivo
+from ordena import ordenar_linhas
+import imunidade as im
+d=ler_arquivo("069BusSystem.txt"); N=ordenar_linhas(d)
+kw=dict(n_ger=1,P_max_kW=500.0,n_cap=1,Q_max_kvar=600.0,verbose=False)
+t=time.time()
+r=im.imunidade(d,*N,**kw)
+print("EXAUSTIVO:",r["anticorpo"],round(r["custo"],2),"comprovado",r["otimo_global_comprovado"],round(time.time()-t,1),"s", "viavel",r["viavel"])
+for sem in range(1,7):
+    t=time.time()
+    g=im.imunidade(d,*N,**kw,limite_exaustivo=0,semente=sem,n_execucoes=3)
+    print("GA sem",sem,g["anticorpo"],round(g["custo"],2),"dif",round(g["custo"]-r["custo"],2),"fluxos",g["n_fluxos"],round(time.time()-t,1),"s",flush=True)
+    
