@@ -191,8 +191,12 @@ class App(tk.Tk):
         st.configure("Titulo.TLabel", font=("TkDefaultFont", 10, "bold"))
         st.configure("Valor.TLabel", background="white", relief="sunken",
                      anchor="e", padding=(6, 3), font=("TkDefaultFont", 11, "bold"))
-        self.fonte_mono = tkfont.nametofont("TkFixedFont").copy()
-        self.fonte_mono.configure(size=11)
+        # Fonte monoespaçada em que os caracteres de moldura (┌─│) se conectam
+        disponiveis = set(tkfont.families())
+        familia = next((f for f in ("Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono",
+                                    "Lucida Console", "Courier New") if f in disponiveis),
+                       tkfont.nametofont("TkFixedFont").actual("family"))
+        self.fonte_mono = tkfont.Font(family=familia, size=11)
 
     def _barra_ferramentas(self):
         barra = ttk.Frame(self, padding=(8, 6))
@@ -232,7 +236,8 @@ class App(tk.Tk):
         aba_rel = ttk.Frame(esq)
         esq.add(aba_rel, text="Relatório")
         self.texto = scrolledtext.ScrolledText(aba_rel, wrap="none", font=self.fonte_mono,
-                                               state="disabled", undo=False)
+                                               state="disabled", undo=False,
+                                               spacing1=0, spacing2=0, spacing3=0)
         self.texto.pack(fill="both", expand=True)
         xs = ttk.Scrollbar(aba_rel, orient="horizontal", command=self.texto.xview)
         xs.pack(fill="x")
@@ -511,6 +516,7 @@ class App(tk.Tk):
                     self.indic["ger"].configure(text=f"{100 * feitos / total:.0f}%")
                     self._progresso(frac)
                 elif tipo == "fim":
+                    ultimo_ger = None            # não sobrescrever o custo final
                     self._finalizar(ev[1])
                 elif tipo == "parado":
                     self._definir_estado(False)
@@ -585,4 +591,3 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     App(sys.argv[1] if len(sys.argv) > 1 else None).mainloop()
-    

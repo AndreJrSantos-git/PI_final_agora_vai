@@ -456,37 +456,6 @@ def _niveis_conjuntos(prob, ab):
     return atual
 
 
-def _construtivo(prob, base=((), ())):
-    """
-    Heurística gulosa: acrescenta os genes que faltam, um a um, na barra
-    (com reotimização dos níveis) que resultar no menor custo.
-    """
-    ab = base
-    for g in (0, 1):
-        n_alvo = prob.n_ger if g == 0 else prob.n_cap
-        while len(ab[g]) < n_alvo:
-            usadas = {b for b, _ in ab[g]}
-            melhor, c_melhor = None, float("inf")
-            for nb in prob.candidatas:
-                if nb in usadas:
-                    continue
-                lista = tuple(sorted(ab[g] + ((nb, 1),)))
-                cand = (lista, ab[1]) if g == 0 else (ab[0], lista)
-                # estágios incompletos do outro grupo ainda não têm todos os genes:
-                # avalia assim mesmo (o custo reflete só o que já foi instalado)
-                cand = _reotimizar_niveis(prob, cand, max_ciclos=3)
-                cc = prob.custo(cand)
-                if cc < c_melhor:
-                    melhor, c_melhor = cand, cc
-            ab = melhor
-    return ab
-
-
-def _prefixo(prob, anterior):
-    """Aproveita os genes do estágio anterior (limitados ao tamanho atual)."""
-    return (tuple(sorted(anterior[0]))[:prob.n_ger], tuple(sorted(anterior[1]))[:prob.n_cap])
-
-
 def _passo_barra_reotimizado(prob, atual, custo_atual):
     """
     Vizinhança 3: troca a barra de UM gene e reotimiza todos os níveis.
@@ -603,15 +572,13 @@ def _otimizar_estagio(dados, Ni, Nj, ids, n_ger, n_cap, P_max_kW, Q_max_kvar,
         execs.append((c, melhor))
         p(f"  {rotulo}: custo = {_brl(c):>20} | {geracoes:>3} gerações ({motivo})")
 
-    # A 1ª execução é SEMEADA (gulosa + estágio anterior); as demais partem de
-    # populações aleatórias e são as realmente independentes.
+    # População inicial ALEATÓRIA em todas as execuções. Única exceção: a 1ª
+    # execução dos estágios 2, 3, ... recebe algumas células de "memória"
+    # (a melhor solução do estágio anterior + novos genes aleatórios).
     for k in range(1, n_execucoes + 1):
         ini = ()
-        if k == 1:
-            ini = [_construtivo(prob, ((), ()))]
-            if anterior:
-                ini.append(_construtivo(prob, _prefixo(prob, anterior)))
-                ini += [prob.estender(anterior) for _ in range(3)]
+        if k == 1 and anterior:
+            ini = [prob.estender(anterior) for _ in range(4)]
         rodar(f"exec {k}/{n_execucoes}", k, n_execucoes, ini)
 
     melhor_c, melhor_ab = min(execs, key=lambda e: e[0])
@@ -641,6 +608,57 @@ def _otimizar_estagio(dados, Ni, Nj, ids, n_ger, n_cap, P_max_kW, Q_max_kvar,
 # ============================================================
 # FUNÇÃO PRINCIPAL
 # ============================================================
+
+# ============================================================
+# FORMATAÇÃO DO RELATÓRIO FINAL
+# ============================================================
+
+LARG = 76
+
+
+def _banner(texto):
+    return ["═" * LARG, texto.center(LARG).rstrip(), "═" * LARG]
+
+
+def _secao(titulo, regua=False):
+    """Título de seção; a régua só é usada quando não há tabela logo abaixo."""
+    return ["", titulo] + (["─" * LARG] if regua else [])
+
+
+def _tabela(cab, linhas, alin, rodape=None, recuo=2):
+    """Tabela só com linhas horizontais (sempre alinha, em qualquer fonte).
+    alin: string com '<', '>' ou '^' por coluna."""
+    todas = [cab] + linhas + ([rodape] if rodape else [])
+    larg = [max(len(str(l[i])) for l in todas) for i in range(len(cab))]
+
+    def celula(c, w, a):
+        c = str(c)
+        return c.ljust(w) if a == "<" else c.rjust(w) if a == ">" else c.center(w)
+
+    def fmt(l):
+        return "   ".join(celula(c, w, a) for c, w, a in zip(l, larg, alin)).rstrip()
+
+    regua = "─" * (sum(larg) + 3 * (len(larg) - 1))
+    out = [regua, fmt(cab), regua] + [fmt(l) for l in linhas]
+    if rodape:
+        out += [regua, fmt(rodape)]
+    out.append(regua)
+    return [" " * recuo + l for l in out]
+
+
+def _viavel_info(i):
+    return (i["convergiu"] and i["violacao"] <= 1e-12
+            and i["excesso_P"] <= 1e-9 and i["excesso_Q"] <= 1e-9)
+
+
+def _var_pct(base, novo):
+    return f"{100.0 * (novo - base) / base:+.2f} %" if abs(base) > 1e-12 else "-"
+
+
+def _ok(cond):
+    return "✔" if cond else "✘"
+
+
 
 def imunidade(
     dados, Ni_ordenado, Nj_ordenado, id_ordenado,
@@ -728,109 +746,149 @@ def imunidade(
     custo_total = info["custo_total"]
     economia = custo_base - custo_total
 
-    p("=" * 60 + "\nRESULTADO FINAL - IMUNIDADE BIOLÓGICA\n" + "=" * 60)
-    if geradores:
-        p("GERADORES\n" + f"{'barra':>6} {'P (kW)':>10} {'Q (kvar)':>10} {'custo':>20}")
-        for b, s in sorted(geradores.items()):
-            p(f"{b:>6} {s.real:>10.2f} {s.imag:>10.2f} {_brl(s.real * custo_ger_kW):>20}")
-    if capacitores:
-        p("\nBANCOS DE CAPACITORES (admitância shunt: Q efetivo = Q nominal x |V|²)\n"
-          + f"{'barra':>6} {'Q nom.':>10} {'|V| (pu)':>9} {'Q efet.':>10} {'passos':>7} {'custo':>20}")
-        for b, q in sorted(capacitores.items()):
-            vb = abs(res["V"][b])
-            p(f"{b:>6} {q:>10.2f} {vb:>9.4f} {q * vb ** 2:>10.2f} "
-              f"{int(round(q / Q_PASSO_KVAR)):>7} {_brl(q * custo_cap_kvar):>20}")
-
-    p(f"\nInjeção total: P = {P_total:.2f} kW | Q (nominal) = {Q_total:.2f} kvar "
-      f"(carga total: {prob.P_carga_total:.2f} kW | {prob.Q_carga_total:.2f} kvar)")
-    p(f"\nPerdas caso base  : {base['perdas_kW']:.3f} kW")
-    p(f"Perdas otimizadas : {res['perdas_kW']:.3f} kW (redução de {reducao:.2f} %)")
-    p(f"Tensão mínima     : {abs(res['V'][barra_vmin]):.5f} pu (barra {barra_vmin})"
-      f"   [base: {min(v_base):.5f} pu]")
-    p(f"Tensão máxima     : {info['v_max']:.5f} pu")
-    p(f"Potência da SE principal: {res['S_SE_kW']:.3f} kW + j{res['S_SE_kvar']:.3f} kvar")
-
-    p("\nCUSTOS")
-    p(f"  Geradores            : {_brl(c_ger):>20}")
-    p(f"  Bancos de capacitores: {_brl(c_cap):>20}")
-    p(f"  Perdas ativas        : {_brl(c_perd):>20}")
-    p(f"  CUSTO TOTAL          : {_brl(custo_total):>20}")
-    p(f"  Custo total caso base: {_brl(custo_base):>20}  (apenas perdas)")
-    p(f"  Economia líquida     : {_brl(economia):>20}")
-
-    if prob.viavel(melhor_global):
-        p("\nRestrições: ATENDIDAS")
-    else:
-        p(f"\nRestrições: VIOLADAS (tensão = {info['violacao']:.5f} pu, "
-          f"excesso P = {info['excesso_P']:.2f} kW, excesso Q = {info['excesso_Q']:.2f} kvar)\n"
-          "  -> aumente P_max/Q_max ou o nº de equipamentos.")
-
     # --------------------------------------------------------
-    # Análise de ganho marginal (ponto de parada)
+    # RELATÓRIO FINAL
     # --------------------------------------------------------
-    if K >= 1:
-        p("\n" + "-" * 60 + "\nGANHO MARGINAL NAS PERDAS POR ESTÁGIO\n" + "-" * 60)
-        p(f"{'estágio':>8} {'ger':>4} {'cap':>4} {'perdas (kW)':>12} {'ganho (%)':>10} {'custo total':>22}")
-        p(f"{0:>8} {0:>4} {0:>4} {base['perdas_kW']:>12.3f} {'-':>10} {_brl(custo_base):>22}")
-        for e in estagios:
-            p(f"{e['k']:>8} {e['n_ger']:>4} {e['n_cap']:>4} {e['info']['perdas_kW']:>12.3f} "
-              f"{100 * e['ganho']:>10.2f} {_brl(e['info']['custo_total']):>22}")
-
-        if ponto_parada is None:
-            p(f"\nTodos os estágios reduziram as perdas em >= {100 * LIMIAR_GANHO_PERDAS:g} %: "
-              "todos os equipamentos informados se justificam.")
-        elif ponto_parada == 0:
-            p(f"\nJá o 1º equipamento reduziu as perdas em menos de {100 * LIMIAR_GANHO_PERDAS:g} %: "
-              "do ponto de vista de perdas, a instalação não compensa.")
-        else:
-            e = estagios[ponto_parada - 1]
-            p(f"\nPODERIA TER PARADO COM {e['n_ger']} GERADOR(ES) E {e['n_cap']} CAPACITOR(ES) "
-              f"(estágio {ponto_parada}): o estágio seguinte reduziu as perdas em menos de "
-              f"{100 * LIMIAR_GANHO_PERDAS:g} %.")
-            p(f"  Posições ótimas desse estágio -> {e['prob'].descrever(e['ab'])}")
-            p(f"  Perdas: {e['info']['perdas_kW']:.3f} kW | custo total: {_brl(e['info']['custo_total'])}")
-
-    # Critério por CUSTO (coerente com a função objetivo): compara o custo
-    # (com penalidades) entre estágios consecutivos e aponta o de menor custo.
+    viavel = prob.viavel(melhor_global)
+    barra_vmin_base = min(base["V"], key=lambda b: abs(base["V"][b]))
+    barra_vmax = max(res["V"], key=lambda b: abs(res["V"][b]))
     k_min = min(estagios, key=lambda e: e["custo"])["k"]
     parada_custo = next((e["k"] - 1 for e in estagios[1:]
                          if e["custo"] >= estagios[e["k"] - 2]["custo"]), None)
-    p("\n  Critério por custo total (função objetivo):")
-    for e in estagios:
-        p(f"    estágio {e['k']}: {_brl(e['custo']):>20}"
-          + ("   <- menor custo" if e["k"] == k_min else ""))
-    if parada_custo is None:
-        p("    Cada equipamento adicional reduziu o custo total.")
-    else:
-        p(f"    O estágio {parada_custo + 1} não reduziu o custo em relação ao estágio "
-          f"{parada_custo}: do ponto de vista econômico, {parada_custo} já bastava.")
+    S_base_SE = (base["S_SE_kW"], base["S_SE_kvar"])
+    R = [""] + _banner("RESULTADO FINAL - IMUNIDADE BIOLÓGICA (CLONALG)")
 
-    # --------------------------------------------------------
-    # Diagnóstico de convergência
-    # --------------------------------------------------------
-    p("\n" + "-" * 60 + "\nDIAGNÓSTICO DE CONVERGÊNCIA\n" + "-" * 60)
-    todos_ok = True
+    R += ["", "  " + ("✔ SOLUÇÃO VIÁVEL: todas as restrições foram atendidas." if viavel
+                      else "✘ SOLUÇÃO INVIÁVEL: há restrições violadas (veja a seção RESTRIÇÕES)."),
+          f"  Redução de perdas: {reducao:.2f} %   |   Economia líquida: {_brl(economia)}"]
+
+    # ---- equipamentos ----
+    if geradores:
+        R += _secao("GERADORES")
+        linhas = [[b, f"{s.real:.1f}", f"{s.imag:.1f}", _brl(s.real * custo_ger_kW)]
+                  for b, s in sorted(geradores.items())]
+        rod = ["Total", f"{sum(s.real for s in geradores.values()):.1f}",
+               f"{sum(s.imag for s in geradores.values()):.1f}", _brl(c_ger)]
+        R += _tabela(["Barra", "P (kW)", "Q (kvar)", "Custo"], linhas, "^>>>", rod)
+    if capacitores:
+        R += _secao("BANCOS DE CAPACITORES  (shunt: Q efetivo = Q nominal x |V|²)")
+        linhas, q_ef_tot = [], 0.0
+        for b, q in sorted(capacitores.items()):
+            vb = abs(res["V"][b])
+            q_ef_tot += q * vb ** 2
+            linhas.append([b, f"{q:.1f}", f"{vb:.4f}", f"{q * vb ** 2:.1f}",
+                           int(round(q / Q_PASSO_KVAR)), _brl(q * custo_cap_kvar)])
+        rod = ["Total", f"{sum(capacitores.values()):.1f}", "", f"{q_ef_tot:.1f}", "", _brl(c_cap)]
+        R += _tabela(["Barra", "Q nom. (kvar)", "|V| (pu)", "Q efet. (kvar)", "Passos", "Custo"],
+                     linhas, "^>>>>>", rod)
+
+    # ---- desempenho ----
+    R += _secao("DESEMPENHO DA REDE")
+    linhas = [
+        ["Perdas ativas (kW)", f"{base['perdas_kW']:.3f}", f"{res['perdas_kW']:.3f}",
+         _var_pct(base["perdas_kW"], res["perdas_kW"])],
+        ["Perdas reativas (kvar)", f"{base['perdas_kvar']:.3f}", f"{res['perdas_kvar']:.3f}",
+         _var_pct(base["perdas_kvar"], res["perdas_kvar"])],
+        ["Tensão mínima (pu)", f"{min(v_base):.5f}  (barra {barra_vmin_base})",
+         f"{abs(res['V'][barra_vmin]):.5f}  (barra {barra_vmin})",
+         f"{abs(res['V'][barra_vmin]) - min(v_base):+.5f} pu"],
+        ["Tensão máxima (pu)", f"{max(v_base):.5f}", f"{info['v_max']:.5f}  (barra {barra_vmax})",
+         f"{info['v_max'] - max(v_base):+.5f} pu"],
+        ["Potência ativa da SE (kW)", f"{S_base_SE[0]:.2f}", f"{res['S_SE_kW']:.2f}",
+         _var_pct(S_base_SE[0], res["S_SE_kW"])],
+        ["Potência reativa da SE (kvar)", f"{S_base_SE[1]:.2f}", f"{res['S_SE_kvar']:.2f}",
+         _var_pct(S_base_SE[1], res["S_SE_kvar"])],
+    ]
+    R += _tabela(["Indicador", "Caso base", "Otimizado", "Variação"], linhas, "<>>>")
+
+    # ---- custos ----
+    R += _secao("CUSTOS")
+    pct = lambda x: f"{100.0 * x / custo_total:.1f} %" if custo_total > 0 else "-"
+    linhas = [["Geradores", _brl(c_ger), pct(c_ger)],
+              ["Bancos de capacitores", _brl(c_cap), pct(c_cap)],
+              ["Perdas ativas", _brl(c_perd), pct(c_perd)]]
+    R += _tabela(["Item", "Valor", "% do total"], linhas, "<>>",
+                 ["CUSTO TOTAL", _brl(custo_total), "100.0 %"])
+    R += [f"  Caso base (somente perdas): {_brl(custo_base)}",
+          f"  Economia líquida          : {_brl(economia)}"]
+
+    # ---- restrições ----
+    R += _secao("RESTRIÇÕES")
+    linhas = [
+        ["Convergência do fluxo de potência", "convergiu" if info["convergiu"] else "NÃO convergiu",
+         "-", _ok(info["convergiu"])],
+        ["Tensão mínima (pu)", f"{info['v_min']:.5f}", f">= {V_MIN_PU}", _ok(info["v_min"] >= V_MIN_PU - 1e-9)],
+        ["Tensão máxima (pu)", f"{info['v_max']:.5f}", f"<= {V_MAX_PU}", _ok(info["v_max"] <= V_MAX_PU + 1e-9)],
+        ["P injetada (kW)", f"{P_total:.1f}", f"<= {prob.P_carga_total:.1f}", _ok(info["excesso_P"] <= 1e-9)],
+        ["Q injetada nominal (kvar)", f"{Q_total:.1f}", f"<= {prob.Q_carga_total:.1f}", _ok(info["excesso_Q"] <= 1e-9)],
+    ]
+    R += _tabela(["Restrição", "Obtido", "Limite", "OK"], linhas, "<>>^")
+    if not viavel:
+        R += ["  → Aumente P_max / Q_max ou o número de equipamentos."]
+
+    # ---- evolução por estágio ----
+    R += _secao("EVOLUÇÃO POR ESTÁGIO")
+    base_viavel = min(v_base) >= V_MIN_PU and max(v_base) <= V_MAX_PU
+    linhas = [["base", 0, 0, f"{base['perdas_kW']:.3f}", "-", _brl(custo_base), _ok(base_viavel), ""]]
+    for e in estagios:
+        obs = []
+        if e["k"] == k_min:
+            obs.append("menor custo")
+        if ponto_parada and e["k"] == ponto_parada:
+            obs.append("parada por perdas")
+        if parada_custo and e["k"] == parada_custo:
+            obs.append("parada por custo")
+        linhas.append([e["k"], e["n_ger"], e["n_cap"], f"{e['info']['perdas_kW']:.3f}",
+                       f"{100 * e['ganho']:.2f} %", _brl(e["info"]["custo_total"]),
+                       _ok(_viavel_info(e["info"])), ", ".join(obs)])
+    R += _tabela(["Estágio", "Ger", "Cap", "Perdas (kW)", "Ganho", "Custo total", "Viável", "Obs."],
+                 linhas, "^^^>>>^<")
+
+    R += ["", "  Conclusão sobre o nº de equipamentos:"]
+    lim = 100 * LIMIAR_GANHO_PERDAS
+    if ponto_parada is None:
+        R += [f"   • Perdas: todos os estágios reduziram as perdas em >= {lim:g} %."]
+    elif ponto_parada == 0:
+        R += [f"   • Perdas: já o 1º estágio reduziu menos de {lim:g} %; instalar não compensa."]
+    else:
+        e = estagios[ponto_parada - 1]
+        R += [f"   • Perdas: o estágio {ponto_parada + 1} reduziu menos de {lim:g} %; "
+              f"{e['n_ger']} gerador(es) + {e['n_cap']} capacitor(es) já bastavam.",
+              f"       posições: {e['prob'].descrever(e['ab'])}"]
+    if parada_custo is None:
+        R += ["   • Custo : cada estágio adicional reduziu o custo total."]
+    else:
+        R += [f"   • Custo : o estágio {parada_custo + 1} não reduziu o custo em relação ao "
+              f"estágio {parada_custo}."]
+    R += [f"   • Estágio de menor custo total: {k_min}."]
+
+    # ---- diagnóstico de convergência ----
+    R += _secao("DIAGNÓSTICO DE CONVERGÊNCIA")
+    linhas = []
     for e in estagios:
         if e["exaustivo"]:
-            status = "ÓTIMO GLOBAL comprovado (busca exaustiva)"
+            metodo, resultado = "Busca exaustiva", "ótimo global comprovado  ✔"
         else:
             ok = e["confirmacoes"] >= MIN_CONFIRMACOES
-            todos_ok &= ok
-            status = (f"melhor custo reencontrado em {e['confirmacoes']} de "
-                      f"{e['n_execucoes_total']} execuções"
-                      + ("" if ok else "  [NÃO CONFIRMADO: aumente população/gerações/execuções]"))
-        aviso = (f" | {e['n_limite_geracoes']} exec. pararam por limite de gerações"
-                 if e["n_limite_geracoes"] else "")
-        p(f"  Estágio {e['k']}: {status}{aviso}")
+            metodo = "CLONALG + busca local"
+            resultado = (f"melhor custo em {e['confirmacoes']} de {e['n_execucoes_total']} "
+                         f"execuções  {'✔' if ok else '⚠ não confirmado'}")
+        if e["n_limite_geracoes"]:
+            resultado += f"  | {e['n_limite_geracoes']} exec. no limite de gerações"
+        linhas.append([e["k"], metodo, resultado])
+    R += _tabela(["Estágio", "Método", "Resultado"], linhas, "^<<")
     if any(e["n_limite_geracoes"] for e in estagios):
-        p("  ATENÇÃO: houve execução que não estagnou; aumente o nº máximo de gerações.")
+        R += ["  ⚠ Houve execução que não estagnou: aumente o nº máximo de gerações."]
     if not all(e["exaustivo"] for e in estagios):
-        p("  Obs.: onde não houve busca exaustiva, a otimalidade global não é matematicamente\n"
-          "  garantida; a confiança vem da repetição independente + busca local estendida.")
+        R += ["  Obs.: onde não houve busca exaustiva, a otimalidade global não é garantida",
+              "  matematicamente; a confiança vem da repetição independente das execuções."]
 
-    p(f"\nFluxos de potência calculados : {sum(e['prob'].n_fluxos for e in estagios)}")
-    p(f"Avaliações evitadas pelo cache: {sum(e['prob'].n_hits for e in estagios)}")
-    p(f"Tempo total                   : {time.time() - t0:.2f} s")
+    # ---- estatísticas ----
+    R += _secao("ESTATÍSTICAS", regua=True)
+    R += [f"  Fluxos de potência calculados : {sum(e['prob'].n_fluxos for e in estagios)}",
+          f"  Avaliações evitadas pelo cache: {sum(e['prob'].n_hits for e in estagios)}",
+          f"  Tempo total                   : {time.time() - t0:.2f} s", ""]
+    p("\n".join(R))
 
     if mostrar_fluxo_final:
         imprimir_resultados(res)
